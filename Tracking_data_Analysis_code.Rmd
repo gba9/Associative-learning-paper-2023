@@ -1,0 +1,586 @@
+---
+title: "LearningNv_AnalysisTrackingData"
+author: "Gaelle Botton-Amiot"
+date: "2023-01-19"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Analysis of output DeepLabCut tracking data
+
+For each video, the tracking output data from DLC consists in a set of coordinates (x,y) and a confidence score ("likelihood", continuous from 0 to 1) for every timepoint (i.e., for every video frame), for every individual. All videos from an experiment were processed using a custom-made function for batch-analysis.
+
+## Initialization
+
+```{r}
+
+# set the working directory
+
+WorkingDirectory<- "___"
+setwd(WorkingDirectory)
+
+# Metadata 1  - set video files parameters ------
+
+# sWoret the number of videos to analyze and the date of the experiment
+nbVids<-8
+paths<-0 # leave 0 
+date<-'220427'
+
+# set the names of individuals - keep consistent with the output DLC file
+Anims<-c('individual1', 'individual2', 'individual3','individual4','individual5', 'individual6','individual7', 'individual8','individual9','individual10')
+
+# set the condition and group corresponding to each video file
+AnimsList<-replicate(nbVids, list(Anims))
+names<-0
+conditions<-c('pretest','pretest', 'pretest', 'pretest',
+              'unpaired', 'paired','unpaired', 'paired')
+group<-c('up1', 'p1','up2', 'p2')
+groups<-rep(group,2)
+
+# set the path to access each video file - they were all determined to finish by the same suffixe, except the video number at the begining
+
+for (i in 1:nbVids) {
+  paths[i]<- paste(date, "_csv files/",i,"_",date, "x6croppedDLC_dlcrnetms5_3pts_for220427Apr28shuffle1_45000_el.csv", sep="")
+  names[i]<-paste("Vid", i, sep="")
+}
+
+#in case of non-continuous video names use the following commands: 
+    # idVids<-c("1", "2", "3", "5", "6", "7", "8")
+    # for (i in 1:nbVids) {
+    #   paths[i]<-paste(date, "videoFolder/", idVids[i],"_",date, "suffixe_DLC_output_File.csv.csv", sep="")
+    #   names[i]<-paste("Vid", idVids[i], sep="")
+    # }
+
+# generate the first part of the metadata file with the video files parameters 
+metadata1<-cbind(paths, names, conditions, groups, AnimsList)
+metadata1<- as.data.frame(metadata1)
+
+# If necessary, it's possible to modify the individials composition for a video (ex. in case of a bad tracking, if one animal needs to be excluded from the analysis)
+# For example, we can exclude individual 7 in the video 10 with the command below:
+#metadata1$AnimsList[[10]]<-c('individual1', 'individual2', 'individual3','individual4','individual5', 'individual6', 'individual8','individual9','individual10')
+
+
+# Metadata 2  - set testing parameters ------
+# initial frame (0 in most cases)
+MinF=0
+MinFlist<-replicate(nbVids, MinF)
+#duration of the video in seconds
+MaxF<-240
+MaxFlist<-replicate(nbVids, MaxF)
+MaxPlot.y<-250
+#window to determine the initial body length (BL) in seconds
+InitWindow<-10
+InitWindowlist<-replicate(nbVids, InitWindow)
+# specify the seconds intervals of the CS application during testing
+CSaplBegin=120
+CSaplEnd=180
+CSaplBlist<-replicate(nbVids, CSaplBegin)
+CSaplElist<-replicate(nbVids, CSaplEnd)
+# specify the seconds intervals around CS application for the initial and final CS application BL values
+rangeDifCS=1
+rangeDifCSlist<-replicate(nbVids, rangeDifCS)
+# specify the window before and after CS application for reference values Pre/Post CS application
+rangeDifPP=30
+rangeDifPPlist<-replicate(nbVids, rangeDifPP)
+# specify the CUTOFF in BL percentage reduction for retraction
+cutoffBL=-10
+cutoffBLlist<-replicate(nbVids, cutoffBL)
+# specify the CUTOFF in BL percentage reduction before CS - animals already retracting before CS --> to discard!
+cutoffBLpre=-10
+cutoffBLprelist<-replicate(nbVids, cutoffBLpre)
+# likelihood cutoff in DLC tracking data
+likelihood=0.9
+
+
+metadata2<-data.frame('Begin video'=MinFlist, 'Duration video'=MaxFlist, "Initial BL window (sec)"=InitWindowlist, "Occurence CS (sec)"= CSaplBlist,  "End CS (sec)"= CSaplElist, "Interval around CSapl (sec)"=rangeDifCSlist , "Pre/post CS window"= rangeDifPPlist, "CutOff BL retraction"=cutoffBLlist, "CutOff BL retraction preCS"=cutoffBLprelist)
+
+# Merge and save metadata files together ----
+metadata<-cbind(metadata1, metadata2)
+
+metadata3<-metadata
+metadata3$AnimsList<-as.character(metadata$AnimsList)
+#metadata2<-rbind(metadata2, parameters)
+library(dplyr)
+metadata3 %>% 
+  rowwise() %>% 
+  mutate_if(is.list, ~paste(unlist(.), collapse = '|')) %>% 
+  write.csv(paste(getwd(), '/', date, '_Categorical', cutoffBL, 'percent_1minCS_preCS10perc_metadata.csv', sep=""), row.names = TRUE)
+
+```
+
+## Function to calculate body length variation for each animal in each video
+
+The function performed the following steps and computed the following parameters: 
+
+```{r}
+
+MeanBLdifVid_Categorical<- function(DLC_data){
+  
+# Prepare the raw data -----------
+  
+  # remove the "scorer" row 
+  DLC_data<-DLC_data[-c(1),]
+  # re-organize the rows
+  DLC_data<- DLC_data[c(3,1,2,4:nrow(DLC_data)), ]
+  DLC_data <- as.data.frame(t(DLC_data))
+  
+  names(DLC_data)       # look at only the names of the variables
+  colnames(DLC_data, do.NULL = TRUE)
+  colnames(DLC_data) <- DLC_data[1,]
+  DLC_data<-DLC_data[2:nrow(DLC_data),]
+  
+  str(DLC_data)       # check the structure
+
+  
+  #reshape in long format
+  
+  library(tidyr)
+  DLC_data <- gather(DLC_data,
+                     key = "frame",
+                     value = "value.px",
+                     4:ncol(DLC_data))
+  str(DLC_data)
+  DLC_data<- spread(DLC_data, key="coords", value="value.px")
+  str(DLC_data)
+  
+  # reorganize the columns
+  DLC_data<-DLC_data[c(3,1,2,5, 6, 4)]
+  str(DLC_data)
+  
+    #convert the values into numbers and factors
+  DLC_data$x<- as.numeric(DLC_data$x)
+  DLC_data$y<- as.numeric(DLC_data$y)
+  DLC_data$likelihood<- as.numeric(DLC_data$likelihood)
+  DLC_data$frame<- as.integer(DLC_data$frame)
+  DLC_data$individuals<- as.factor(DLC_data$individuals)
+  DLC_data$bodyparts<- as.factor(DLC_data$bodyparts)
+  
+  # organize per frame number
+  library(dplyr)
+  DLC_data<- DLC_data %>% arrange(DLC_data$frame)
+  
+  #Exclude individuals and/or frames given the metadata parameters
+  
+  DLC_data<-DLC_data %>%
+    dplyr::filter(individuals %in% Anims, frame>=MinF & frame<=MaxF*5)
+  str(DLC_data)
+  
+  nf_DLC_data=nlevels(as.factor(DLC_data$frame))
+  print(nf_DLC_data)
+  
+  #________________________________
+  # Bring the arena in a square with a 0,0 origin
+  minX<-min(DLC_data$x, na.rm=TRUE)
+  minY<-min(DLC_data$y, na.rm=TRUE)
+  
+  DLC_data$x<-(DLC_data$x)-minX
+  DLC_data$y<-(DLC_data$y)-minY
+  
+  dimension<- c(max(DLC_data$x, na.rm=TRUE), max(DLC_data$y, na.rm=TRUE))
+  
+  #_____________________________________________
+  
+  # selection of the rows only with a sufficient likelyhood (determined in metadata)
+  
+    library(dplyr)
+  highlik<-DLC_data %>%
+    dplyr::filter(likelihood >= likelihood)
+  
+  drops<-"likelihood"
+  highlik <- highlik[, ! names(highlik) %in% drops, drop = F]
+  
+  #Time in secondes and minutes
+  # --> acquisition at 5fps
+  sec<-(highlik$frame/5)
+  secVid<-as.numeric(sec/6)
+  
+  minutes<-(highlik$frame/(5*60))
+  minVid<- (minutes/6)
+  
+  sec.int<-as.integer(sec)
+  sec.int<-as.numeric(sec.int)
+  
+  highlik<- cbind(highlik, sec, sec.int, minutes, secVid, minVid)
+  
+  #remove duplicated columns (keep the last one)
+  highlik <- highlik[, !duplicated(colnames(highlik), fromLast = TRUE)] 
+  
+  #nb of rows highlik
+  nf_highlik=nrow(highlik)
+  
+  #DATAFRAME WITH MEAN POSITION PER SECOND - bin the position of each point per second
+  
+  meanSecX<-aggregate(highlik$x, by=list(Seconds=highlik$sec.int, highlik$individuals, highlik$bodyparts), FUN=mean)
+  meanSecY<-aggregate(highlik$y, by=list(Seconds=highlik$sec.int, highlik$individuals, highlik$bodyparts), FUN=mean)
+  
+  meanMin<-as.numeric(meanSecX$Seconds)/60
+  meanSecvid<-as.numeric(meanSecX$Seconds)/6
+  
+  meanSec<- cbind(meanSecX, meanSecY$x, meanMin, meanSecvid)
+  
+  rm('meanMin')
+  rm('meanSecvid')
+  
+  colnames(meanSec)<-c("Seconds", "individuals", "bodyparts", "x", "y", "minutes", "secVid")
+  colnames(meanSec)
+  
+  max_meanSec=nlevels(as.factor(meanSec$Seconds))
+  
+  
+  #PLOT COORDINATES --------------
+  
+
+  #plot coordinates of each individuals and save the file in the working directory
+
+  library(ggplot2)
+  Subt<-paste(name, condition, date, sep="-")
+  
+  nameplot1<-paste(date, 'coords','_',  name, '_', condition, '.png', sep="")
+  png(file=nameplot1, width=300, height=250, unit='mm', res=100)
+  cords<-ggplot(highlik) + geom_point(data=highlik, aes(x = x, y = y, color=individuals), size = 1)+
+    theme(legend.position = "right")+
+    labs(y="Y coordinates (A.U.)", x="X coordinates (A.U.)", color="Individuals")+
+    labs(subtitle = paste(Subt), caption = Sys.time())
+  print (cords)
+  dev.off()
+  
+  
+  # BODYLENGTH CALCULATION -----
+
+  #create dataframe with only rows for each second and animal and remove duplicated rows
+  DF_bodylength<-meanSec[,-c(3,4,5)]
+  
+  DF_bodylength<- DF_bodylength %>%
+    arrange(individuals, Seconds)
+  DF_bodylength<- DF_bodylength %>%
+    distinct()
+  
+  bodyparts<-c('head', 'foot', 'mid')
+  
+  head<-subset(meanSec, bodyparts=="head")
+  head<- head %>%
+    arrange(individuals, Seconds)
+  
+  foot<-subset(meanSec, bodyparts=="foot")
+  foot<- foot %>%
+    arrange(individuals, Seconds)
+  
+  mid<-subset(meanSec, bodyparts=="mid")
+  mid<- mid %>%
+    arrange(individuals, Seconds)
+  
+  lenCord<-nrow(DF_bodylength)
+  
+  DF_bodylength <- DF_bodylength %>% left_join(head, by=c("Seconds","individuals", 'minutes', 'secVid'))
+  DF_bodylength <- DF_bodylength %>% left_join(foot, by=c("Seconds","individuals", 'minutes', 'secVid'))
+  DF_bodylength <- DF_bodylength %>% left_join(mid, by=c("Seconds","individuals", 'minutes', 'secVid'))
+  
+  colnames(DF_bodylength)<-c('Seconds', 'individuals', 'minutes', 'secVid', 'a', 'head.x', 'head.y', 'b', 'foot.x', 'foot.y', 'c', 'mid.x', 'mid.y')
+  
+  DF_bodylength<-DF_bodylength[, -c(5, 8, 11, 14, 17)]
+  
+  # body segments length calculation
+  
+  headmid<-rep(1, lenCord)
+  midfoot<-rep(1, lenCord)
+  
+  sumBL<-rep(1, lenCord)
+  
+  DF_bodylength<-cbind(DF_bodylength, headmid, midfoot, sumBL)
+  
+  for (i in 1: lenCord ) {
+    DF_bodylength$headmid[i]=sqrt((DF_bodylength$head.x[i]-DF_bodylength$mid.x[i])^2+(DF_bodylength$head.y[i]-DF_bodylength$mid.y[i])^2)
+    DF_bodylength$midfoot[i]=sqrt((DF_bodylength$mid.x[i]-DF_bodylength$foot.x[i])^2+(DF_bodylength$mid.y[i]-DF_bodylength$foot.y[i])^2)
+    DF_bodylength$sumBL[i]=sum(DF_bodylength$headmid[i],DF_bodylength$midfoot[i])
+  }
+  
+  
+  # BL variation in percentage of initial BL
+  
+  nAnim=nlevels(as.factor(Anims))
+  print(nAnim)
+  
+  initBL<-0
+  indivIndx<-0
+  sumBL_percent<-0
+  
+  for (i in 1:nAnim) {
+    anim<-subset(DF_bodylength, individuals==Anims[i])
+    initBL[i]<- mean(anim$sumBL[0:InitWindow],na.rm=T)
+  }
+  
+  for (i in 1: lenCord ) {
+    indivIndx<-match(DF_bodylength$individuals[i], Anims)
+    sumBL_percent[i]<-((DF_bodylength$sumBL[i]-initBL[indivIndx])/initBL[indivIndx]*100)
+  }
+  
+  DF_bodylength<-cbind(DF_bodylength, sumBL_percent)
+  
+  
+  # Plot bodylength ------ 
+  
+  MaxPlotPercent.y<- max(DF_bodylength$sumBL_percent)
+  MinPlotPercent.y<- min(DF_bodylength$sumBL_percent)
+  
+  # plot Bodylength over time (seconds) of all animals
+  library(ggplot2)
+  
+  nameplot2<-paste(date, 'BL','_',  name, '_', condition, '.png', sep="")
+  png(file=nameplot2, width=300, height=225, unit='mm', res=100)
+  BLplot<-ggplot(DF_bodylength, aes(x=Seconds, y=sumBL, color=individuals)) +
+    geom_line(size=1, alpha=0.9, linetype=1) + 
+    geom_vline(xintercept=(CSapl[1]), color='deeppink', linetype='longdash')+
+    geom_vline(xintercept=(CSapl[2]), color='deeppink', linetype='longdash')+
+    annotate("rect", xmin = (CSapl[1]-rangeDifPP) , xmax = (CSapl[1]), ymin = 0, ymax = MaxPlot.y, alpha = .2)+
+    annotate("rect", xmin = (CSapl[2]) , xmax = (CSapl[2]+rangeDifPP), ymin = 0, ymax = MaxPlot.y, alpha = .2)+
+    annotate("rect", xmin = (CSapl[1]-rangeDifCS) , xmax = (CSapl[1]+rangeDifCS), ymin = 0, ymax = MaxPlot.y, alpha = .2, fill='deeppink')+
+    annotate("rect", xmin = (CSapl[2]-rangeDifCS) , xmax = (CSapl[2]+rangeDifCS), ymin = 0, ymax = MaxPlot.y, alpha = .2, fill='deeppink')+
+    ggtitle("Bodylength over time") +
+    xlab("Seconds") +
+    ylab("Bodylength (A.U.)")+
+    xlim(0,MaxF)+
+    ylim(0,MaxPlot.y)+
+    theme_minimal()+
+    labs(subtitle = paste(Subt), caption = Sys.time())
+  print(BLplot)
+  dev.off()
+  
+  # plot Bodylength percentage variation over time (seconds) of individual animals in separated panels
+  
+  nameplot3<-paste(date, 'BLperc','_', name, '_', condition, '.png', sep="")
+  png(file=nameplot3, width=400, height=175, unit='mm', res=100)
+  
+  BLplotIndiv<-ggplot(DF_bodylength, aes(x=Seconds, y=sumBL_percent, color=individuals)) +
+    geom_line(size=1, alpha=0.9, linetype=1) + 
+    facet_wrap(facets =  vars(individuals), ncol = 5)+
+    geom_vline(xintercept=(CSapl[1]), color='deeppink', linetype='longdash')+
+    geom_vline(xintercept=(CSapl[2]), color='deeppink', linetype='longdash')+
+    annotate("rect", xmin = (CSapl[1]-rangeDifPP) , xmax = (CSapl[1]), ymin = MinPlotPercent.y, ymax = MaxPlotPercent.y, alpha = .2)+
+    annotate("rect", xmin = (CSapl[2]) , xmax = (CSapl[2]+rangeDifPP), ymin = MinPlotPercent.y, ymax =MaxPlotPercent.y, alpha = .2)+
+    annotate("rect", xmin = (CSapl[1]-rangeDifCS) , xmax = (CSapl[1]+rangeDifCS), ymin = MinPlotPercent.y, ymax = MaxPlotPercent.y, alpha = .2, fill='deeppink')+
+    annotate("rect", xmin = (CSapl[2]-rangeDifCS) , xmax = (CSapl[2]+rangeDifCS), ymin = MinPlotPercent.y, ymax = MaxPlotPercent.y, alpha = .2, fill='deeppink')+
+    ggtitle("Initial Bodylength percentage variation over time") +
+    xlab("Seconds") +
+    ylab("Bodylength percentage")+
+    xlim(0,MaxF)+
+    ylim(MinPlotPercent.y, MaxPlotPercent.y)+
+    theme_bw()+
+    theme(legend.position="none")+
+    labs(subtitle = paste(Subt), caption = Sys.time())
+  print(BLplotIndiv)
+  dev.off()
+  
+
+  # BODYLENGTH VARIATION DURING CS APPLICATION---------
+  
+  # Initialization
+  
+  MeanCSinit<-0
+  MaxPre<-0
+  MinCS<-0
+  DeltaCS<-0
+  DeltaPreCS<-0
+  mvt<-0
+  
+  Cname<-c(rep(name,length(Anims)))
+  Cname<-data.frame(Cname, stringsAsFactors = TRUE)
+  Ccondition<-c(rep(condition,length(Anims)))
+  Ccondition<-data.frame(Ccondition, stringsAsFactors = TRUE)
+  Cgroup<-c(rep(group,length(Anims)))
+  Cgroup<-data.frame(Cgroup, stringsAsFactors = TRUE)
+  
+    # Calculation of DeltapreCS and DeltaCS
+  
+  for (i in 1:nAnim) {
+    anim<-subset(DF_bodylength, individuals==Anims[i])
+    MeanCSinit<-mean(anim$sumBL_percent[(CSapl[1]-rangeDifCS):(CSapl[1]+rangeDifCS)])
+    MaxPre<-max(anim$sumBL_percent[(CSapl[1]-rangeDifPP):(CSapl[1])], na.rm=T)
+    MinCS<-min(anim$sumBL_percent[CSapl[1]:CSapl[2]], na.rm=T)
+    DeltaCS[i]<-MinCS-MeanCSinit
+    DeltaPreCS[i]<-MeanCSinit-MaxPre
+    
+    if (DeltaPreCS[i]<= cutoffBLpre |is.na(DeltaPreCS[i])|is.na(DeltaCS[i])){
+      mvt[i]<-NA
+    }
+    else if ( DeltaCS[i]<= cutoffBL){
+       mvt[i]<-"retract"
+    }
+    else if ( DeltaCS[i]>= -cutoffBL){
+      mvt[i]<-"extend"
+    }        
+    else {
+      mvt[i]<-"immobile"
+    }
+  }
+  
+  DeltaCS<-unlist(DeltaCS)
+  DeltaPreCS<-unlist(DeltaPreCS)
+  mvt<-unlist(mvt)
+  BLdif<-cbind(Anims, DeltaCS, DeltaPreCS, mvt, Cname, Ccondition, Cgroup)
+  BLdif<-as.data.frame(BLdif)
+  
+  colnames(BLdif)<-c("Individuals", "DeltaCS", "PreCSretraction", "MvtCategory", "Video", 'Condition', 'Group')
+  print(BLdif)
+  
+  
+  #Calculate the mean bodylength difference of the 10 animals and the total number of animals retracting
+  DeltaCSMean<-mean(as.numeric(BLdif$DeltaCS), na.rm=TRUE)
+  DeltaPreCSMean<-mean(as.numeric(BLdif$PreCSretraction), na.rm=TRUE)
+  CountRetract<-length(which(BLdif$MvtCategory == "retract"))
+  
+  # Print results for each video and add a summary row at the end of the calculations table for each video
+  
+  BLdif<-rbind(BLdif, c('Mean',DeltaCSMean, DeltaPreCSMean, CountRetract))
+  print(BLdif)  
+  
+  print("The mean bodylength difference of the 10 animals between the beginning and the end of the video is:")
+  print(DeltaCSMean)
+  print("The number of animals retracting is:")
+  print(CountRetract)
+  
+  # Print plots
+  print(cords)
+  print(BLplot)
+  print(BLplotIndiv)
+  
+
+  BLdif<- as.list.data.frame(BLdif)
+  return(BLdif)
+  
+  
+}
+
+```
+
+It's now time to use the function to perform the batch analysis of all the videos. It will automatically generate plots saved in the working directory.
+
+```{r}
+
+OutputData<- list()
+DLC_data<- 0
+Data<-0
+  
+# Run function to calculate all the values for each animal per video!
+# all the parameters are taken from the metadata dataframe previously generated
+
+for (i in 5:nbVids) {
+  DLC_data<- read.csv2 (as.character(metadata$path[[i]]), sep=',', header=FALSE)
+  name<-metadata$names[[i]]
+  condition<-metadata$conditions[[i]]
+  group<-metadata$groups[[i]]
+  Anims<-metadata$AnimsList[[i]]
+  MinF<-metadata$Begin.video[[i]]
+  MaxF<-metadata$Duration.video[[i]]
+  InitWindow<-metadata$Initial.BL.window..sec.[[i]]
+  CSapl<-c(metadata$Occurence.CS..sec.[[i]], metadata$End.CS..sec.[[i]])
+  rangeDifCS<-metadata$Interval.around.CSapl..sec.[[i]]
+  rangeDifPP<-metadata$Pre.post.CS.window[[i]]
+  rangeDif<-metadata$RangeBLdif[[i]]
+  cutoffBL<-metadata$CutOff.BL.retraction[[i]]
+  cutoffBLpre<-metadata$CutOff.BL.retraction.preCS[[i]]
+  Data<-MeanBLdifVid_Categorical(DLC_data)
+  OutputData[[i]] <- Data
+}
+
+# convert the output list into a dataframe
+Joined <- data.table::rbindlist(OutputData)
+
+# convert values into numbers and factors
+Joined$DeltaCS<-as.numeric(Joined$DeltaCS)
+Joined$MvtCategory<-as.factor(Joined$MvtCategory)
+Joined$Individuals<-as.factor(Joined$Individuals)
+# generate another data frame, without the summary row at the end of each group of rows for all the individuals per video 
+Joined_noNA<-na.omit(Joined)
+
+# export Joined result data frames
+fileName1<-paste(getwd(), '/', date, '_', cutoffBL, 'percent_CS1min_preCS10perc_full.csv', sep="")
+write.csv(Joined,fileName1, row.names = F)
+
+
+```
+
+## Summary plots and analysis
+
+```{r}
+
+#Count the categories of movements for each condition -----
+
+JoinedCount<- Joined_noNA %>% count(Video, Condition, MvtCategory)
+
+Condition<-c("unpaired", "paired")
+level_order <- c("unpaired", "paired")
+
+# reshape data in  contingency table
+
+library(dplyr)
+
+ContingencyT<- JoinedCount %>%
+  group_by(Condition, MvtCategory) %>%
+  summarise(Freq = sum(n))
+
+library(tidyr)
+
+ContingencyT <- ContingencyT %>% 
+  # select only the columns we're interested in
+  select(Condition, MvtCategory, Freq) %>% 
+  # use pivot_wider to go from long to wide format
+  pivot_wider(names_from = "MvtCategory", 
+              names_prefix = "",
+              values_from = "Freq")
+ContingencyT<-as.data.frame(ContingencyT)
+
+rownames(ContingencyT)<-ContingencyT[,1]
+ContingencyT<-ContingencyT[,-1]
+
+Percent<-c((ContingencyT[1, 2]/(ContingencyT[1,1]+ContingencyT[1,2])*100),(ContingencyT[2, 2]/(ContingencyT[2,1]+ContingencyT[2,2])*100))
+Prop<-data.frame(Condition, Percent)
+Prop$Condition<-factor(Prop$Condition, levels=level_order)
+
+# Plot the percentage of animals retracting in each condition -----
+
+library(ggplot2)
+
+ggplot(Prop, aes(x=Condition, y=Percent)) + 
+  geom_bar(stat = "identity")+
+  theme_minimal()+
+  ylim(0, 100)+
+  labs(title = "% of animals retraction >10% after 1min CS", 
+                       subtitle = paste(date), caption = Sys.time())
+  
+
+# Calculates summary statistics for the DeltaCS values: mean, sd, se and IC ----
+
+library(dplyr)
+my_sum <- Joined_noNA %>%
+  group_by(Condition) %>%
+  summarise( 
+    n=n(),
+    mean=mean(DeltaCS),
+    sd=sd(DeltaCS)
+  ) %>%
+  mutate( se=sd/sqrt(n))  %>%
+  mutate( ic=se * qt((1-0.05)/2 + .5, n-1))
+
+print(my_sum)
+
+# Plot DeltaCS - Violin plot and boxplot ------
+
+plot5<- ggplot(Joined_noNA, aes(x=Condition, y=DeltaCS, fill=Condition)) + 
+  geom_violin(width=0.8, alpha=0.8)+
+  geom_point(aes(color=Condition), position=position_jitterdodge(0.4), size=2, alpha=0.5)+
+  geom_boxplot(notch=FALSE, width=0.1, color="grey", fill="grey", alpha=0.5)+
+  geom_hline(yintercept=0, linetype="dashed", color = "black", size=0.8)+
+  labs(title = "Body lenght percentage variation before and during CS", 
+       subtitle = paste(date, "", sep=" - "), caption = Sys.time())+
+  theme_minimal()+
+  theme(legend.position = 'bottom', axis.line = element_line(colour = "black", size = 1, linetype = "solid"))+
+  xlab('')+
+  ylab('')
+
+
+print(plot5)
+
+```

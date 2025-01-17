@@ -3,4 +3,4 @@ Nematostella vectensis DeepLabCut tracking data output analysis for Associative 
 
 Paper link: https://www.pnas.org/doi/10.1073/pnas.2220685120
 
-All the descriptive information about the code is into the PDF knitted version of markdown file.
+All the descriptive information about the code is into the PDF knitted version of the markdown file.
